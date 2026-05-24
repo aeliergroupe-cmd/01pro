@@ -1,0 +1,134 @@
+version: '3.9'
+
+# ============================================================
+# ATELIER GROUPE — Full-Stack Docker Compose
+# Services: PostgreSQL · Redis · Vendure backend · Next.js (optional)
+# ============================================================
+#
+# Quick start:
+#   docker-compose up -d postgres redis
+#   cd vendure-backend && npm install && npm run dev
+#   cd .. && npm install && npm run dev   (runs on :3001)
+#
+# Full stack:
+#   docker-compose up -d
+# ============================================================
+
+services:
+  # ---- Database -----
+  postgres:
+    image: postgres:16-alpine
+    container_name: atelier_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vendure}
+      POSTGRES_USER: ${POSTGRES_USER:-vendure}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vendure_dev_password}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-vendure}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- Cache / Sessions -----
+  redis:
+    image: redis:7-alpine
+    container_name: atelier_redis
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---- Vendure Backend -----
+  vendure:
+    build:
+      context: ./vendure-backend
+      dockerfile: Dockerfile
+    container_name: atelier_vendure
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: dev
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-vendure}
+      DB_USERNAME: ${POSTGRES_USER:-vendure}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-vendure_dev_password}
+      SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-superadmin}
+      COOKIE_SECRET: ${COOKIE_SECRET:-atelier-groupe-dev-cookie-secret}
+      STOREFRONT_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
+    ports:
+      - '3000:3000'
+    volumes:
+      - vendure_assets:/app/static/assets
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:3000/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---- Next.js Storefront (production build) -----
+  # For development, run `npm run dev` locally instead
+  storefront:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: atelier_storefront
+    depends_on:
+      vendure:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_VENDURE_SHOP_API_URL: http://vendure:3000/shop-api
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      NODE_ENV: production
+    ports:
+      - '3001:3001'
+    restart: unless-stopped
+    profiles:
+      - production
+
+  # ---- DB Inspector (development tool) -----
+  adminer:
+    image: adminer:latest
+    container_name: atelier_adminer
+    depends_on:
+      - postgres
+    ports:
+      - '8080:8080'
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    restart: unless-stopped
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  redis_data:
+  vendure_assets:
+
+networks:
+  default:
+    name: atelier_network
